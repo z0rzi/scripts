@@ -60,7 +60,29 @@ function findTarget(): Target | null {
   return null;
 }
 
+// Control characters (newline, CR, ESC...) have no business in a path and
+// could act as keys in Neovim.
+export function isSafePath(file: string): boolean {
+  return file !== "" && !/[\x00-\x1f\x7f]/.test(file);
+}
+
+// The file and position travel as data in an expression (a quoted string and
+// numbers), never as typed keys, so nothing in them can run as a command.
+const openLua = `(function(file, line, col)
+  vim.cmd.FindAndOpenFile({ args = { file, tostring(line) } })
+  if col > 1 then
+    vim.api.nvim_win_set_cursor(0, { vim.fn.line("."), col - 1 })
+  end
+  vim.cmd("normal! zz")
+  return 0
+end)(unpack(_A))`;
+
+function vimString(s: string): string {
+  return `'${s.replaceAll("'", "''")}'`;
+}
+
 export async function sendSignal(file: string, line = 1, col = 1): Promise<boolean> {
+  if (!isSafePath(file)) throw new Error(`Refusing unsafe path: ${JSON.stringify(file)}`);
   if (!Number.isInteger(line) || line < 1) line = 1;
   if (!Number.isInteger(col) || col < 1) col = 1;
 
@@ -70,14 +92,14 @@ export async function sendSignal(file: string, line = 1, col = 1): Promise<boole
     return false;
   }
 
-  const path = file.replaceAll("<", "<lt>");
-  const column = col > 1 ? `0${col - 1}l` : "0";
+  // Leave insert/visual/command-line mode first (fixed keys, nothing from the caller).
+  run(["nvim", "--server", target.socket, "--remote-send", "<C-\\><C-n>"]);
   run([
     "nvim",
     "--server",
     target.socket,
-    "--remote-send",
-    `<C-\\><C-n>:FindAndOpenFile ${path} ${line}<CR>${column}zz`,
+    "--remote-expr",
+    `luaeval(${vimString(openLua)}, [${vimString(file)}, ${line}, ${col}])`,
   ]);
 
   if (target.paneId !== undefined) {

@@ -3,7 +3,7 @@
 // requests in, and Neovim asked over its socket what it ended up showing.
 //
 // Neovim loads FindAndOpenFile from the live config
-// (~/.config/nvim/lua/features/find_and_open_file.lua); set
+// (~/.config/nvim/lua/features/find-and-open-file.lua); set
 // FIND_AND_OPEN_FILE_LUA to test another checkout.
 //
 //   bun test
@@ -16,7 +16,7 @@ import { createServer } from "node:net";
 
 const feature =
   process.env.FIND_AND_OPEN_FILE_LUA ??
-  join(process.env.HOME!, ".config/nvim/lua/features/find_and_open_file.lua");
+  join(process.env.HOME!, ".config/nvim/lua/features/find-and-open-file.lua");
 
 const dir = mkdtempSync(join(tmpdir(), "open-in-vim-"));
 const socket = join(dir, "nvim.sock");
@@ -61,7 +61,7 @@ beforeAll(async () => {
   await until(async () => existsSync(socket), "Neovim's socket");
 
   const port = await freePort();
-  base = `http://localhost:${port}`;
+  base = `http://127.0.0.1:${port}`;
   server = Bun.spawn(["bun", join(import.meta.dir, "open-in-vim.ts")], {
     env: { ...process.env, VIM_SIGNAL_SOCKET: socket, OPEN_IN_VIM_PORT: String(port) },
     stdout: "ignore",
@@ -97,4 +97,40 @@ test("a request without a file gives a 400", async () => {
   const res = await fetch(`${base}/?line=3`);
 
   expect(res.status).toBe(400);
+});
+
+test("a request can't type commands into Neovim", async () => {
+  const marker = join(dir, "pwned");
+  const evil = `x\n:!touch ${marker}\n`;
+  for (const file of [evil, evil.replaceAll("\n", "\r"), `x\x1b:!touch ${marker}\r`]) {
+    await fetch(`${base}/?file=${encodeURIComponent(file)}&line=1`);
+  }
+  await fetch(`${base}/?file=app/foo.ts&line=1%0A:!touch%20${encodeURIComponent(marker)}%0A`);
+
+  await Bun.sleep(500);
+  expect(existsSync(marker)).toBe(false);
+});
+
+test("a request still opens a path with spaces", async () => {
+  mkdirSync(join(project, "src/my dir"), { recursive: true });
+  writeFileSync(join(project, "src/my dir/bar.ts"), "a\nb\nc\n");
+
+  await fetch(`${base}/?file=${encodeURIComponent("my dir/bar.ts")}&line=2`);
+
+  await until(
+    async () => nvimEval("expand('%:p')").endsWith("/src/my dir/bar.ts"),
+    "Neovim to open the file",
+  );
+  expect(nvimEval("line('.')")).toBe("2");
+});
+
+test("the server only listens on the loopback interface", async () => {
+  const port = new URL(base).port;
+  const out = Bun.spawnSync(["ss", "-Hltn"]).stdout.toString();
+  const addresses = out
+    .split("\n")
+    .map((l) => l.trim().split(/\s+/)[3])
+    .filter((a) => a?.endsWith(`:${port}`));
+  expect(addresses.length).toBeGreaterThan(0);
+  for (const a of addresses) expect(a).toBe(`127.0.0.1:${port}`);
 });
