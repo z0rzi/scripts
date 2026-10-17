@@ -1,0 +1,8 @@
+{
+  "name": "scripts",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "kleur": "^4.1.5"
+  }
+}
