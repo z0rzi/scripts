@@ -5,7 +5,7 @@
 // Run from a terminal, records there and prints the text (and copies it) instead.
 // With a file argument, only prints the transcription of that file.
 
-import { $, sleep } from "bun";
+import { $ } from "bun";
 import fs from "fs";
 
 const TMP_AUDIO = "/tmp/whisper_recording.wav";
@@ -92,18 +92,16 @@ async function listenAndTranscribe(): Promise<string> {
 }
 
 /**
- * Pastes the text in chunks with ctrl+shift+v, which also works in terminals.
+ * Pastes the text in one go with ctrl+shift+v, which also works in terminals.
+ * Not in chunks: Wayland pastes are async, so the app could read the clipboard
+ * after the next chunk replaced it.
  */
 async function typeText(text: string) {
-  const chunkSize = 30;
   // Linux key codes: 29 = left ctrl, 42 = left shift, 47 = v.
   const ctrlShiftV = ["29:1", "42:1", "47:1", "47:0", "42:0", "29:0"];
 
-  for (let i = 0; i < text.length; i += chunkSize) {
-    await $`wl-copy -- ${text.slice(i, i + chunkSize)}`;
-    await $`ydotool key ${ctrlShiftV}`.quiet();
-    await sleep(10);
-  }
+  await $`wl-copy -- ${text}`;
+  await $`ydotool key ${ctrlShiftV}`.quiet();
 }
 
 if (process.argv.length > 2) {
