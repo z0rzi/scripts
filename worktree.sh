@@ -1,0 +1,193 @@
+#!/usr/bin/env bash
+
+set -uo pipefail
+
+# Fichiers/dossiers non suivis par git que l'on relie (lien symbolique) du
+# worktree d'origine vers le nouveau worktree.
+LINK_NAMES=("node_modules" "CLAUDE.md" ".env" "docs" "inputs-outputs" "compteurs_data" "documentation" ".claude" "GLOSSARY.md" "GLOSSARY-MAP.md" ".scratch")
+
+usage() {
+    cat <<'EOF'
+USAGE:
+    worktree.sh                          Liste les worktrees (branche et chemin)
+    worktree.sh add <branch> <path>      Crée un worktree sur <branch> dans <path>
+    worktree.sh remove|rm <branch|path>  Supprime un worktree
+EOF
+}
+
+die() {
+    echo "worktree.sh: $*" >&2
+    exit 1
+}
+
+# --- Helpers ----------------------------------------------------------------
+
+# Affiche une ligne "chemin<TAB>branche" par worktree.
+wt_entries() {
+    git worktree list --porcelain | awk '
+        /^worktree / { if (path != "") print path "\t" branch; path = substr($0, 10); branch = "(detached)" }
+        /^branch /   { branch = $2; sub("^refs/heads/", "", branch) }
+        /^bare$/     { branch = "(bare)" }
+        END          { if (path != "") print path "\t" branch }
+    '
+}
+
+# Liste (en chemins absolus) les fichiers/dossiers portant un des LINK_NAMES.
+# On ne descend pas dans .git ni dans une correspondance déjà trouvée.
+find_candidates() {
+    local root="$1" name
+    local -a expr=()
+
+    for name in "${LINK_NAMES[@]}"; do
+        [ "${#expr[@]}" -gt 0 ] && expr+=(-o)
+        expr+=(-name "$name")
+    done
+
+    find "$root" -mindepth 1 -maxdepth 4 \
+        -name .git -prune -o \
+        \( "${expr[@]}" \) -print -prune 2>/dev/null
+}
+
+# Vrai si le chemin (relatif à $root) n'est suivi par aucun commit.
+is_untracked() {
+    local root="$1" rel="$2"
+    [ -z "$(git -C "$root" ls-files -- "$rel")" ]
+}
+
+# --- Commandes --------------------------------------------------------------
+
+cmd_list() {
+    local path branch width=0
+    local -a paths=() branches=()
+
+    while IFS=$'\t' read -r path branch; do
+        paths+=("$path")
+        branches+=("$branch")
+        [ "${#branch}" -gt "$width" ] && width="${#branch}"
+    done < <(wt_entries)
+
+    local i
+    for i in "${!paths[@]}"; do
+        printf '%-*s  %s\n' "$width" "${branches[$i]}" "${paths[$i]}"
+    done
+}
+
+# Crée les liens symboliques du worktree source vers le nouveau worktree.
+link_extras() {
+    local src="$1" dest="$2"
+    local found rel target
+
+    while IFS= read -r found; do
+        rel="${found#"$src"/}"
+        is_untracked "$src" "$rel" || continue
+
+        # Si la source est elle-même un lien, on pointe vers la cible réelle.
+        target=$(readlink -f "$found") || continue
+        [ -n "$target" ] || continue
+
+        if [ -e "$dest/$rel" ] || [ -L "$dest/$rel" ]; then
+            continue
+        fi
+
+        mkdir -p "$(dirname "$dest/$rel")"
+        ln -s "$target" "$dest/$rel" && echo "linked $rel -> $target"
+    done < <(find_candidates "$src")
+}
+
+cmd_add() {
+    [ $# -eq 2 ] || { usage; exit 1; }
+    local branch="$1" path="$2" src dest
+
+    git show-ref --verify --quiet "refs/heads/$branch" \
+        || die "branch '$branch' does not exist"
+
+    if [ -e "$path" ] || [ -L "$path" ]; then
+        die "path '$path' already exists"
+    fi
+
+    src=$(git rev-parse --show-toplevel) || exit 1
+
+    mkdir -p "$(dirname "$path")" || exit 1
+    git worktree add "$path" "$branch" || exit 1
+
+    dest=$(cd "$path" && pwd) || exit 1
+    link_extras "$src" "$dest"
+}
+
+# Vrai si le chemin est un lien symbolique, ou un dossier ne contenant que des
+# liens symboliques (donc entièrement créé par 'add').
+only_links() {
+    local path="$1"
+
+    [ -L "$path" ] && return 0
+    [ -d "$path" ] || return 1
+
+    # find ne suit pas les liens : on ne descend donc pas dans node_modules & co.
+    [ -z "$(find "$path" -mindepth 1 ! -type l ! -type d -print -quit)" ]
+}
+
+# Échoue si le worktree contient des modifications non commitées.
+# Les liens symboliques créés par 'add' ne sont pas considérés comme des
+# modifications.
+check_clean() {
+    local path="$1" line file dirty=""
+
+    while IFS= read -r -d '' line; do
+        file="${line:3}"
+        if [ "${line:0:2}" = "??" ] && only_links "$path/${file%/}"; then
+            continue
+        fi
+        dirty+="$line"$'\n'
+    done < <(git -C "$path" status --porcelain -z)
+
+    if [ -n "$dirty" ]; then
+        echo "worktree.sh: '$path' has uncommitted changes:" >&2
+        printf '%s' "$dirty" >&2
+        exit 1
+    fi
+}
+
+# Supprime les liens symboliques créés par 'add' (sans toucher à leur cible).
+remove_links() {
+    local path="$1" found
+
+    while IFS= read -r found; do
+        [ -L "$found" ] && rm -f "$found"
+    done < <(find_candidates "$path")
+}
+
+cmd_remove() {
+    [ $# -eq 1 ] || { usage; exit 1; }
+    local target="$1" abs path branch found=""
+
+    abs=$(readlink -f "$target" 2>/dev/null)
+
+    while IFS=$'\t' read -r path branch; do
+        if [ "$branch" = "$target" ] || [ "$path" = "$target" ] || { [ -n "$abs" ] && [ "$path" = "$abs" ]; }; then
+            found="$path"
+            break
+        fi
+    done < <(wt_entries)
+
+    [ -n "$found" ] || die "no worktree matching '$target'"
+    [ "$found" = "$(git rev-parse --show-toplevel)" ] \
+        && die "refusing to remove the current worktree"
+
+    check_clean "$found"
+    remove_links "$found"
+
+    git worktree remove "$found" || exit 1
+    echo "removed $found"
+}
+
+# --- Entrée -----------------------------------------------------------------
+
+git rev-parse --git-dir >/dev/null 2>&1 || die "not a git repository"
+
+case "${1:-}" in
+    "")            cmd_list ;;
+    add)           shift; cmd_add "$@" ;;
+    remove|rm)     shift; cmd_remove "$@" ;;
+    -h|--help|help) usage ;;
+    *)             usage; exit 1 ;;
+esac

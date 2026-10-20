@@ -16,6 +16,7 @@ Most of them run with [Bun](https://bun.sh). Run `bun install` once for the depe
 | `codediff` | Git difftool built on `explorer.ts` and Neovim |
 | `listfiles.sh` | Lists files in a directory, sorted by date |
 | `datesort.ts` | Sorts file paths from stdin by modification date |
+| `worktree.sh` | Lists, adds and removes git worktrees; new ones get symlinks to untracked files like `node_modules` and `.env` |
 
 `keyboard.ts`, `InputField.ts`, `icons2.ts` and `shell.ts` are helpers the other
 scripts import.
