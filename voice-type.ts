@@ -92,6 +92,14 @@ async function listenAndTranscribe(): Promise<string> {
 }
 
 /**
+ * Not with $: wl-copy forks a child that serves the clipboard and keeps the
+ * output pipes open, so $ would wait until something else takes the clipboard.
+ */
+async function copy(text: string) {
+  await Bun.spawn(["wl-copy", "--", text], { stdio: ["ignore", "ignore", "ignore"] }).exited;
+}
+
+/**
  * Pastes the text in one go with ctrl+shift+v, which also works in terminals.
  * Not in chunks: Wayland pastes are async, so the app could read the clipboard
  * after the next chunk replaced it.
@@ -100,8 +108,11 @@ async function typeText(text: string) {
   // Linux key codes: 29 = left ctrl, 42 = left shift, 47 = v.
   const ctrlShiftV = ["29:1", "42:1", "47:1", "47:0", "42:0", "29:0"];
 
-  await $`wl-copy -- ${text}`;
+  await copy(text);
   await $`ydotool key ${ctrlShiftV}`.quiet();
+  // wl-copy's clipboard server dies with this shortcut's systemd unit: give the
+  // app (and Klipper) time to read the text first.
+  await Bun.sleep(500);
 }
 
 if (process.argv.length > 2) {
@@ -118,7 +129,7 @@ if (process.argv.length > 2) {
 try {
   const text = await listenAndTranscribe();
   console.log(text);
-  if (fromTerminal) await $`wl-copy -- ${text}`;
+  if (fromTerminal) await copy(text);
   else await typeText(text);
 } catch (err) {
   console.error("Error:", err);
