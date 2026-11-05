@@ -15,8 +15,12 @@ USAGE:
                                          n'existe pas ; [path] par défaut :
                                          <repo>-<branche normalisée>, à côté du
                                          dépôt principal)
-    worktree.sh remove|rm <branch|path>  Supprime un worktree (propose de
-                                         supprimer aussi la branche)
+    worktree.sh remove|rm <branch|path> [-k|-d|-D]
+                                         Supprime un worktree, puis la branche :
+                                         -k  la garde
+                                         -d  la supprime (refusé si non mergée)
+                                         -D  la supprime même si non mergée
+                                         sans option : demande (si terminal)
 EOF
 }
 
@@ -194,8 +198,18 @@ remove_links() {
 }
 
 cmd_remove() {
-    [ $# -eq 1 ] || { usage; exit 1; }
-    local target="$1" abs path branch found=""
+    # mode : ask (question si terminal), keep, delete (-d), force (-D).
+    local target="" mode=ask abs path branch found="" arg
+    for arg in "$@"; do
+        case "$arg" in
+            -k|--keep-branch)   mode=keep ;;
+            -d|--delete-branch) mode=delete ;;
+            -D|--force-delete-branch) mode=force ;;
+            -*)                 usage; exit 1 ;;
+            *)  [ -z "$target" ] || { usage; exit 1; }; target="$arg" ;;
+        esac
+    done
+    [ -n "$target" ] || { usage; exit 1; }
 
     abs=$(readlink -f "$target" 2>/dev/null)
 
@@ -219,8 +233,14 @@ cmd_remove() {
     case "$branch" in
         "(detached)"|"(bare)") return 0 ;;
     esac
-    [ -t 0 ] || return 0
 
+    case "$mode" in
+        keep)   return 0 ;;
+        delete) git branch -d "$branch" || exit 1; return 0 ;;
+        force)  git branch -D "$branch" || exit 1; return 0 ;;
+    esac
+
+    [ -t 0 ] || return 0
     ask_yn "delete branch '$branch'?" || return 0
     git branch -d "$branch" && return 0
     ask_yn "branch '$branch' is not fully merged, force delete?" || return 0
