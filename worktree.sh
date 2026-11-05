@@ -10,8 +10,13 @@ usage() {
     cat <<'EOF'
 USAGE:
     worktree.sh                          Liste les worktrees (branche et chemin)
-    worktree.sh add <branch> <path>      Crée un worktree sur <branch> dans <path>
-    worktree.sh remove|rm <branch|path>  Supprime un worktree
+    worktree.sh add <branch> [path]      Crée un worktree sur <branch> dans [path]
+                                         (créée depuis master, ou main, si elle
+                                         n'existe pas ; [path] par défaut :
+                                         <repo>-<branche normalisée>, à côté du
+                                         dépôt principal)
+    worktree.sh remove|rm <branch|path>  Supprime un worktree (propose de
+                                         supprimer aussi la branche)
 EOF
 }
 
@@ -94,12 +99,39 @@ link_extras() {
     done < <(find_candidates "$src")
 }
 
-cmd_add() {
-    [ $# -eq 2 ] || { usage; exit 1; }
-    local branch="$1" path="$2" src dest
+# Nom de branche utilisable dans un nom de dossier : tout caractère hors
+# [A-Za-z0-9._-] devient '-', tirets consécutifs fusionnés, extrémités nettoyées.
+normalize_branch() {
+    printf '%s' "$1" | sed -E 's/[^A-Za-z0-9._-]+/-/g; s/-+/-/g; s/^-//; s/-$//'
+}
 
-    git show-ref --verify --quiet "refs/heads/$branch" \
-        || die "branch '$branch' does not exist"
+# Chemin du worktree principal (le dépôt de base).
+main_worktree() {
+    wt_entries | head -n1 | cut -f1
+}
+
+cmd_add() {
+    [ $# -eq 1 ] || [ $# -eq 2 ] || { usage; exit 1; }
+    local branch="$1" path="${2:-}" src dest base_repo start=""
+
+    git check-ref-format --branch "$branch" >/dev/null 2>&1 \
+        || die "invalid branch name '$branch'"
+
+    if ! git show-ref --verify --quiet "refs/heads/$branch"; then
+        if git show-ref --verify --quiet refs/heads/master; then
+            start=master
+        elif git show-ref --verify --quiet refs/heads/main; then
+            start=main
+        else
+            die "branch '$branch' does not exist and neither master nor main does"
+        fi
+    fi
+
+    if [ -z "$path" ]; then
+        base_repo=$(main_worktree)
+        [ -n "$base_repo" ] || die "cannot find the main worktree"
+        path="$(dirname "$base_repo")/$(basename "$base_repo")-$(normalize_branch "$branch")"
+    fi
 
     if [ -e "$path" ] || [ -L "$path" ]; then
         die "path '$path' already exists"
@@ -108,7 +140,12 @@ cmd_add() {
     src=$(git rev-parse --show-toplevel) || exit 1
 
     mkdir -p "$(dirname "$path")" || exit 1
-    git worktree add "$path" "$branch" || exit 1
+    if [ -n "$start" ]; then
+        echo "creating branch '$branch' from '$start'"
+        git worktree add -b "$branch" "$path" "$start" || exit 1
+    else
+        git worktree add "$path" "$branch" || exit 1
+    fi
 
     dest=$(cd "$path" && pwd) || exit 1
     link_extras "$src" "$dest"
@@ -178,6 +215,29 @@ cmd_remove() {
 
     git worktree remove "$found" || exit 1
     echo "removed $found"
+
+    case "$branch" in
+        "(detached)"|"(bare)") return 0 ;;
+    esac
+    [ -t 0 ] || return 0
+
+    ask_yn "delete branch '$branch'?" || return 0
+    git branch -d "$branch" && return 0
+    ask_yn "branch '$branch' is not fully merged, force delete?" || return 0
+    git branch -D "$branch" || exit 1
+}
+
+# Pose une question, attend 'y' ou 'n' (une seule touche, sans Entrée).
+ask_yn() {
+    local key
+    while true; do
+        read -r -n 1 -p "$1 [y/n] " key
+        echo
+        case "$key" in
+            y|Y) return 0 ;;
+            n|N) return 1 ;;
+        esac
+    done
 }
 
 # --- Entrée -----------------------------------------------------------------
