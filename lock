@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+
+RED='\033[1;31m'
+GREEN='\033[1;32m'
+NC='\033[0m'
+
+for prog in gpg shred; do
+    if ! command -v "$prog" > /dev/null; then
+        echo -e "❌ ${RED}'$prog' is not installed...${NC}"
+        exit 1
+    fi
+done
+
+file=$1
+
+if [ ! -f "$file" ]; then
+    echo "USAGE = 'lock <file>'";
+    exit 1;
+fi
+
+if [ -f "$file.locked" ]; then
+    echo -e "A file named '${GREEN}$file.locked${NC}' already exists..."
+    exit 1
+fi
+
+read -s -p "🔒 " pass1
+echo
+read -s -p "🔒 " pass2
+echo
+
+if [ "$pass1" != "$pass2" ]; then
+    echo
+    echo -e "❌ ${RED}The 2 passphrases are different...${NC}"
+    exit 1
+fi
+
+if [ ! "$pass1" ]; then
+    echo -e "❌ ${RED}The passphrase is empty...${NC}"
+    exit 1
+fi
+
+# Never offer to delete the original if encryption failed.
+if ! echo "$pass1" | gpg --batch --yes --passphrase-fd 0 -o "$file.locked" -c "$file"; then
+    echo -e "❌ ${RED}Encryption failed, '$file' was left untouched${NC}"
+    rm -f "$file.locked"
+    exit 1
+fi
+
+echo "Do you want to delete the original file?"
+
+res=''
+while [[ ! "$res" =~ [yn] ]]; do
+    read -p "(y/n) > " res || res=n
+done
+
+[ "$res" = "y" ] && shred -u "$file"
+
+echo "All done!"

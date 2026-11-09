@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+
+RED='\033[1;31m'
+BLUE='\033[1;34m'
+NC='\033[0m'
+
+cmd=
+file=
+
+while [ "$1" ]; do
+    if [ "$1" = "-P" ]; then
+        shift
+        pass=$1
+    elif [ ! "$file" ]; then
+        file=$1
+    else
+        cmd=$1
+    fi
+    shift
+done
+
+if [ ! -f "$file" ]; then
+    echo "USAGE = 'unlock [-P password] <file> [cmd]'";
+    echo
+    echo -e "cmd will be ${BLUE}bat${NC} if not provided"
+    exit 1;
+fi
+
+# The viewer only matters when no cmd is given.
+for prog in gpg file md5sum cut shred "${cmd:-bat}"; do
+    if ! command -v "$prog" > /dev/null; then
+        echo -e "❌ ${RED}'$prog' is not installed...${NC}"
+        exit 1
+    fi
+done
+
+ft=`file "$file"`
+ft="${ft#*: }"
+
+if [[ ! "$ft" =~ "GPG symmetrically encrypted data" ]] && [[ ! "$ft" =~ "PGP symmetric key encrypted data" ]]; then
+    echo "😿 '$file' does not seem to be GPG encrypted...";
+    echo
+    echo -e "Its type is '$BLUE${ft#*: }$NC'"
+    exit 1;
+fi
+
+if [ ! "$pass" ]; then
+    read -s -p '🔒 ' pass
+    echo
+fi
+
+truename=${file%.*}
+truename=${truename##*/}
+if [ ! "$truename" ]; then
+    truename=$RANDOM$RANDOM$RANDOM
+fi
+
+echo "$pass" | gpg -q --batch --yes --passphrase-fd 0 -o /tmp/$truename -d "$file" 2> /dev/null
+
+if [ $? -ne 0 ]; then
+    echo
+    echo -e "${RED}❌ Wrong passphrase!${NC}"
+    exit 1
+fi
+
+sum1=`md5sum /tmp/$truename | cut -d" " -f1`
+
+if [ "$cmd" ]; then
+    $cmd /tmp/$truename
+else
+    bat -pp /tmp/$truename
+fi
+
+sum2=`md5sum /tmp/$truename | cut -d" " -f1`
+
+if [ "$sum1" != "$sum2" ]; then
+    echo $sum1
+    echo $sum2
+    echo "You seem to have modified the file, do you want to overwrite the locked file?"
+
+    res=''
+    while [[ ! "$res" =~ [yn] ]]; do
+        read -p "(y/n) > " res || res=n
+    done
+
+    if [ "$res" = "y" ]; then
+        echo "$pass" | gpg --batch --yes --passphrase-fd 0 -o "$file" -c "/tmp/$truename"
+    fi
+fi
+
+shred -u /tmp/$truename
