@@ -1,7 +1,8 @@
 #!/usr/bin/env bun
 
-// Records the mic in a small floating terminal (any key stops), transcribes it
-// with OpenAI Whisper, then pastes the text into the focused window.
+// Records the mic in a small floating terminal (any key stops, Escape or Ctrl+C
+// cancels), transcribes it with OpenAI Whisper, then pastes the text into the
+// focused window.
 // Run from a terminal, records there and prints the text (and copies it) instead.
 // With a file argument, only prints the transcription of that file.
 
@@ -10,6 +11,8 @@ import fs from "fs";
 
 const TMP_AUDIO = "/tmp/whisper_recording.wav";
 const TMP_SCRIPT = "/tmp/whisper.sh";
+// Created by the recording script when Escape or Ctrl+C cancels.
+const TMP_CANCELLED = "/tmp/whisper_cancelled";
 // sops-decrypted shell secrets (modules/secrets.nix). Read here because a
 // global shortcut doesn't run through an interactive shell.
 const SHELL_ENV = "/run/secrets/shell-env";
@@ -57,7 +60,8 @@ async function transcribeAudio(filepath: string): Promise<string> {
   return data.text;
 }
 
-async function listenAndTranscribe(): Promise<string> {
+/** Resolves to null when the recording was cancelled (Escape or Ctrl+C). */
+async function listenAndTranscribe(): Promise<string | null> {
   // Mutes the speakers while recording, then restores them.
   await Bun.write(
     TMP_SCRIPT,
@@ -67,24 +71,44 @@ async function listenAndTranscribe(): Promise<string> {
 
     ffmpeg -loglevel error -y -f pulse -i default -acodec pcm_s16le -ar 16000 -ac 1 -t 120 ${TMP_AUDIO} &
     jpid=$!
-    echo "Recording... press any key to stop"
-    read -n1
-    kill -s INT $jpid
 
-    [ -z "$muted" ] && wpctl set-mute @DEFAULT_AUDIO_SINK@ 0
+    stop() {
+      kill -s INT $jpid
+      [ -z "$muted" ] && wpctl set-mute @DEFAULT_AUDIO_SINK@ 0
+      wait $jpid
+    }
+    cancel() {
+      stop
+      touch ${TMP_CANCELLED}
+      clear
+      echo "CANCELLED"
+      sleep 0.5
+      exit 0
+    }
+    # The trap has to exit itself: read resumes once the trap returns.
+    trap cancel INT
 
-    wait $jpid
+    echo "Recording... press any key to stop, Escape or Ctrl+C to cancel"
+    read -rsn1 key
+    [ "$key" = $'\\e' ] && cancel
+    stop
   `,
   );
 
   fs.rmSync(TMP_AUDIO, { force: true });
+  fs.rmSync(TMP_CANCELLED, { force: true });
   if (fromTerminal) {
+    // Ctrl+C reaches this process too: leave it to the script's cancel trap.
+    const ignoreSigint = () => {};
+    process.on("SIGINT", ignoreSigint);
     await Bun.spawn(["bash", TMP_SCRIPT], { stdio: ["inherit", "inherit", "inherit"] }).exited;
+    process.off("SIGINT", ignoreSigint);
   } else {
     // krohnkite floats windows of class "floating" (modules/desktop.nix).
     await $`wezterm --config initial_cols=50 --config initial_rows=15 --config font_size=15 start --always-new-process --class floating -- bash ${TMP_SCRIPT}`;
   }
 
+  if (fs.existsSync(TMP_CANCELLED)) return null;
   if (!fs.existsSync(TMP_AUDIO) || fs.statSync(TMP_AUDIO).size < MIN_AUDIO_BYTES) {
     throw new Error("Nothing was recorded (recording too short or ffmpeg failed).");
   }
@@ -128,6 +152,7 @@ if (process.argv.length > 2) {
 
 try {
   const text = await listenAndTranscribe();
+  if (text === null) process.exit(0);
   console.log(text);
   if (fromTerminal) await copy(text);
   else await typeText(text);
