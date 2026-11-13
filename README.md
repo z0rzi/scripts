@@ -9,6 +9,7 @@ Most of them run with [Bun](https://bun.sh). Run `bun install` once for the depe
 | Script | What it does |
 | --- | --- |
 | `omnibar.ts` | Launcher for a floating terminal: programs, bookmarks with search, URLs, web search, and a calculator that copies its result |
+| `emoji.ts` | Emoji picker for a floating terminal: searches the emojis already used, or emojifinder.com, and copies the one picked |
 | `voice-type.ts` | Records the mic, transcribes it with OpenAI Whisper and pastes the text into the focused window |
 | `vim-signal.ts` | Opens a file (at a line and column) in the Neovim running in the focused wezterm pane |
 | `open-in-vim.ts` | Small HTTP server so the browser's "open in editor" links open in Neovim |
