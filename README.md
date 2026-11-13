@@ -1,13 +1,14 @@
 # scripts
 
 My personal scripts, the ones I use every day when I code. They're written for my own
-setup (NixOS, KDE on Wayland, wezterm, tmux, Neovim) and probably need tweaking
+setup (NixOS, KDE or Sway on Wayland, wezterm, tmux, Neovim) and probably need tweaking
 anywhere else.
 
 Most of them run with [Bun](https://bun.sh). Run `bun install` once for the dependencies.
 
 | Script | What it does |
 | --- | --- |
+| `omnibar.ts` | Launcher for a floating terminal: programs, bookmarks with search, URLs, web search, and a calculator that copies its result |
 | `voice-type.ts` | Records the mic, transcribes it with OpenAI Whisper and pastes the text into the focused window |
 | `vim-signal.ts` | Opens a file (at a line and column) in the Neovim running in the focused wezterm pane |
 | `open-in-vim.ts` | Small HTTP server so the browser's "open in editor" links open in Neovim |
